@@ -1,1 +1,7 @@
 . .venv/bin/activate
+
+If commits don't show up on Github then set commit email by following these steps:
+git config --global user.email "YOUR_EMAIL"
+
+and then check using:
+git config --global user.email
