@@ -7,12 +7,12 @@ DATA_DIR = "/Users/nihaljayanth/Development/makemore/data/input.txt"
 torch.manual_seed(1337)
 batch_size = 32
 block_size = 8
-max_iter = 3000
+max_iter = 6000
 eval_interval = 300
 learning_rate = 1e-2
 device = "cuda:1" if torch.cuda.is_available() else "cpu"
 eval_iter = 200
-
+n_embed = 32
 
 def read_data(data_dir):
     with open(data_dir, "r") as f:
@@ -61,13 +61,20 @@ def estimate_loss(model):
     return out
 
 class BigramLanguageModel(nn.Module):
-    def __init__(self, vocab_size):
+    def __init__(self):
         super().__init__()
-        self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
+        self.token_embedding_table = nn.Embedding(vocab_size, n_embed)
+        self.position_embedding_table = nn.Embedding(block_size, n_embed)
+        self.lm_head = nn.Linear(n_embed, vocab_size)
 
     def forward(self, idx, targets=None):
-        logits = self.token_embedding_table(idx)
+        B, T = idx.shape
+        tok_emb = self.token_embedding_table(idx)
         # B = batch_size, T = seq_len, C = output_classes
+        pos_embed = self.position_embedding_table(torch.arange(T, device=device))
+        x = tok_emb + pos_embed
+        logits = self.lm_head(x)
+
         if targets is None:
             loss = None
         else:
@@ -86,7 +93,7 @@ class BigramLanguageModel(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
         return idx
 
-lm = BigramLanguageModel(vocab_size=vocab_size)
+lm = BigramLanguageModel()
 lm = lm.to(device)
 optimizer = torch.optim.AdamW(lm.parameters(), lr=1e-3)
 
