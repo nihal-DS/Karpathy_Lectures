@@ -62,7 +62,6 @@ def estimate_loss(model):
     return out
 
 class Head(nn.Module):
-
     '''Single headed self attention'''
 
     def __init__(self, head_size):
@@ -89,16 +88,51 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size=head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(n_embed, n_embed)
 
     def forward(self, x):
-        return torch.cat([h(x) for h in self.heads], dim=-1)
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        out = self.proj(out)
+        return out
+
+class FeedForward(nn.Module):
+    '''Simple linear layer followed by non linearity'''
+
+    def __init__(self, n_embed):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_embed, 4 * n_embed),
+            nn.ReLU(),
+            nn.Linear(4 * n_embed, n_embed),
+        )
+    
+    def forward(self, x):
+        return self.net(x)
+
+class Block(nn.Module):
+    '''Transformer Block'''
+
+    def __init__(self, n_embed, n_head):
+        super().__init__()
+        head_size = n_embed // n_head
+        self.sa = MultiHeadAttention(n_head, head_size)
+        self.ffwd = FeedForward(n_embed)
+
+    def forward(self, x):
+        x = x + self.sa(x)
+        x = x + self.ffwd(x)
+        return x
 
 class BigramLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.token_embedding_table = nn.Embedding(vocab_size, n_embed)
         self.position_embedding_table = nn.Embedding(block_size, n_embed)
-        self.sa_head = MultiHeadAttention(4, n_embed//4)
+        self.block = nn.Sequential(
+            Block(n_embed, n_head=4),
+            Block(n_embed, n_head=4),
+            Block(n_embed, n_head=4),
+        )
         self.lm_head = nn.Linear(n_embed, vocab_size)
 
     def forward(self, idx, targets=None):
@@ -107,7 +141,7 @@ class BigramLanguageModel(nn.Module):
         # B = batch_size, T = seq_len, C = output_classes
         pos_embed = self.position_embedding_table(torch.arange(T, device=device))
         x = tok_emb + pos_embed
-        x = self.sa_head(x)
+        x = self.block(x)
         logits = self.lm_head(x)
 
         if targets is None:
