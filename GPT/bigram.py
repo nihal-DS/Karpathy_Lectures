@@ -1,13 +1,15 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import time
 
 
-DATA_DIR = "/Users/nihaljayanth/Development/makemore/data/input.txt"
+DATA_DIR = "/home/ubuntu/nihal/data/input.txt"
 torch.manual_seed(1337)
-batch_size = 64
+torch.set_float32_matmul_precision('high')
+batch_size = 128
 block_size = 256
-max_iter = 5000
+max_iter = 500
 eval_interval = 500
 learning_rate = 3e-4
 device = "cuda:1" if torch.cuda.is_available() else "cpu"
@@ -17,6 +19,7 @@ n_embed = 384
 n_head = 6
 n_layer = 6
 dropout = 0.2
+epochs = 8
 
 def read_data(data_dir):
     with open(data_dir, "r") as f:
@@ -89,7 +92,7 @@ class Head(nn.Module):
 
 class MultiHeadAttention(nn.Module):
     '''Multiple heads of self-attention in parallel'''
-
+    
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size=head_size) for _ in range(num_heads)])
@@ -174,20 +177,32 @@ class BigramLanguageModel(nn.Module):
 
 lm = BigramLanguageModel()
 lm = lm.to(device)
-optimizer = torch.optim.AdamW(lm.parameters(), lr=1e-3)
+lm = torch.compile(lm)
+optimizer = torch.optim.AdamW(lm.parameters(), lr=learning_rate)
 
-for step in range(max_iter):
+for epoch in range(epochs):
 
-    if step % eval_interval == 0:
-        losses = estimate_loss(lm)
-        print(f"Step {step}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+    torch.cuda.synchronize()
+    start_time = time.perf_counter()
 
-    xb, yb = get_batch("train")
-    
-    logits, loss = lm(xb, yb)
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
+    for step in range(max_iter):
+
+        if step % eval_interval == 0:
+            losses = estimate_loss(lm)
+            print(f"Train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+
+        xb, yb = get_batch("train")
+        
+        logits, loss = lm(xb, yb)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+
+    torch.cuda.synchronize()
+    end_time = time.perf_counter()
+
+    elapsed_time = end_time - start_time
+    print(f"Time elapsed for epoch {epoch+1}: {elapsed_time:.2f} seconds")
 
 context = torch.zeros((1,1), dtype=torch.long, device=device)
-print(decode(lm.generate(torch.zeros((1,1), dtype=torch.long), max_new_tokens=500)[0].tolist()))
+print(decode(lm.generate(context, max_new_tokens=5000)[0].tolist()))
