@@ -37,8 +37,10 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
         # att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        # # print(f"Shape after attention: {att.shape}")
         # att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
         # att = F.softmax(att, dim=-1)
+        # # print(f"Shape after softmax: {att.shape}")
         # y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         y = y.transpose(1, 2).contiguous().view(B, T, C)
@@ -74,6 +76,16 @@ class Block(nn.Module):
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
+        # ln_1 = self.ln_1(x)
+        # print(f"Output from ln 1 in Block: {ln_1.shape}")
+        # attn = self.attn(ln_1)
+        # print(f"Output from attn (CausalSelfAttention) in Block: {attn.shape}")
+        # x = x + attn
+        # ln_2 = self.ln_2(x)
+        # print(f"Output from ln 2 in Block: {ln_2.shape}")
+        # mlp = self.mlp(ln_2)
+        # print(f"Output from mlp: {mlp.shape}")
+        # x = x + mlp
         return x
 
 
@@ -116,11 +128,15 @@ class GPT(nn.Module):
         x = tok_emb + pos_emb
         for block in self.transformer.h:
             x = block(x)
+        # print(f"Shape from transformer Blocks: {x.shape}")
         x = self.transformer.ln_f(x)
+        # print(f"Shape after layer norm: {x.shape}")
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
+            # print(f"Shape of logits: {logits.shape}")
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            # print(f"Shape of loss: {loss.shape}")
             return logits, loss
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
@@ -228,11 +244,26 @@ class DataLoaderLite:
 
 model = GPT(GPTConfig(vocab_size=50304))
 model.to(device)
-model = torch.compile(model)
+# model = torch.compile(model)
 train_loader = DataLoaderLite(B=16, T=1024)
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-for i in range(50):
+max_lr = 3e-4
+min_lr = max_lr * 0.1
+warmup_steps = 50
+max_step = 50
+
+def get_lr(it):
+    if it < warmup_steps:
+        return (max_lr * (it+1)) / warmup_steps
+    if it > max_step:
+        return min_lr
+    decay_ratio = (it - warmup_steps) / (max_step - warmup_steps)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    return min_lr + coeff * (max_lr - min_lr)
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
+for step in range(50):
     t0 = time.time()
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
@@ -240,12 +271,18 @@ for i in range(50):
     with torch.autocast(device_type=device, dtype=torch.bfloat16):
         logits, loss = model(x, y)
     loss.backward()
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    
+    lr = get_lr(step)
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = lr
+
     optimizer.step()
     torch.cuda.synchronize()
     t1 = time.time()
     dt = (t1 - t0) * 1000
     tokens_per_sec = (train_loader.B * train_loader.T) / (t1 - t0)
-    print(f"Step {i}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/s: {tokens_per_sec:.2f}")
+    print(f"Step {step}, loss: {loss.item()}, lr {lr:.4e}, norm: {norm:.4f}, dt: {dt:.2f}ms, tok/s: {tokens_per_sec:.2f}")
 
 print(loss)
 import sys; sys.exit(0)
